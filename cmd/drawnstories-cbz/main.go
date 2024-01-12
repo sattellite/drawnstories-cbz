@@ -123,6 +123,10 @@ func getBooks(address string) (map[string][]string, error) {
 
 func makeCbz(books map[string][]string) error {
 	for bookName, pages := range books {
+		if len(pages) == 0 {
+			continue
+		}
+
 		fmt.Printf("Processing book %s\n", bookName)
 		dir, dErr := os.MkdirTemp("", bookName)
 		if dErr != nil {
