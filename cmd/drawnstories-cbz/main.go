@@ -29,18 +29,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// if passed specified book number
+	// if passed specified book numbers
 	if len(os.Args) > 2 {
-		// find specified book
-		book := make(map[string][]string, 1)
-		suffix := fmt.Sprintf("-%s", os.Args[2])
+		// find specified books
+		bookList := make(map[string][]string)
+		suffixes := make([]string, 0)
+		for _, num := range os.Args[2:] {
+			suffixes = append(suffixes, fmt.Sprintf("-%s", num))
+		}
 		for name, pages := range books {
-			if strings.HasSuffix(name, suffix) {
-				book[name] = pages
-				break
+			for _, s := range suffixes {
+				if strings.HasSuffix(name, s) {
+					bookList[name] = pages
+				}
 			}
 		}
-		books = book
+		books = bookList
 	}
 
 	// make each book
