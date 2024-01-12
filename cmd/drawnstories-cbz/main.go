@@ -29,7 +29,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// download pages of each book
+	// if passed specified book number
+	if len(os.Args) > 2 {
+		// find specified book
+		book := make(map[string][]string, 1)
+		suffix := fmt.Sprintf("-%s", os.Args[2])
+		for name, pages := range books {
+			if strings.HasSuffix(name, suffix) {
+				book[name] = pages
+				break
+			}
+		}
+		books = book
+	}
+
+	// make each book
 	cbzErr := makeCbz(books)
 	if cbzErr != nil {
 		fmt.Println(cbzErr.Error())
