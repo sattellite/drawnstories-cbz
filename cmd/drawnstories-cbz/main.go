@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
@@ -260,7 +261,14 @@ func (d *downloader) getBooks(address string) (map[string][]string, error) {
 }
 
 func (d *downloader) makeCbz(books map[string][]string) error {
-	for bookName, pages := range books {
+	orderedList := make([]string, 0)
+	for bookName := range books {
+		orderedList = append(orderedList, bookName)
+	}
+	// sort books by name
+	sort.Strings(orderedList)
+	for _, bookName := range orderedList {
+		pages := books[bookName]
 		if len(pages) == 0 {
 			continue
 		}
