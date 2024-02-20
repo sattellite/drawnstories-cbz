@@ -369,6 +369,10 @@ func (d *downloader) generateDescription(dir string, b book) error {
 	if cometErr != nil {
 		return fmt.Errorf("failed to create comet file: %w", cometErr)
 	}
+	comicInfoErr := d.createComicInfoFile(dir, b)
+	if comicInfoErr != nil {
+		return fmt.Errorf("failed to create comic info file: %w", comicInfoErr)
+	}
 	return nil
 }
 
@@ -414,6 +418,48 @@ func (d *downloader) createCometFile(dir string, b book) error {
 	enc.Indent("", "  ")
 	if err := enc.Encode(info); err != nil {
 		return fmt.Errorf("failed to encode comet file: %w", err)
+	}
+	return nil
+}
+
+func (d *downloader) createComicInfoFile(dir string, b book) error {
+	// write xml declaration
+	cometFile, cErr := os.Create(filepath.Join(dir, "ComicInfo.xml"))
+	if cErr != nil {
+		return fmt.Errorf("failed to create comic info file: %w", cErr)
+	}
+	defer func(c io.Closer) {
+		_ = c.Close()
+	}(cometFile)
+
+	// information about comet found here https://github.com/geometer/FBReaderJ/issues/329
+	// Some comic info description here https://wiki.mobileread.com/wiki/ComicRack
+	type comicInfo struct {
+		XMLName   xml.Name `xml:"ComicInfo"`
+		XSI       string   `xml:"xmlns:xsi,attr"`
+		XSD       string   `xml:"xmlns:xsd,attr"`
+		Title     string   `xml:"Title"`
+		Publisher string   `xml:"Publisher"`
+		Number    int      `xml:"Number"`
+		PageCount int      `xml:"PageCount"`
+	}
+
+	info := comicInfo{
+		XSI:       "http://www.w3.org/2001/XMLSchema-instance",
+		XSD:       "http://www.w3.org/2001/XMLSchema",
+		Title:     b.Name,
+		Publisher: b.Publisher,
+		Number:    b.Issue,
+		PageCount: len(b.Pages),
+	}
+	_, hErr := cometFile.WriteString(xml.Header)
+	if hErr != nil {
+		return fmt.Errorf("failed to write to comic info file: %w", hErr)
+	}
+	enc := xml.NewEncoder(cometFile)
+	enc.Indent("", "  ")
+	if err := enc.Encode(info); err != nil {
+		return fmt.Errorf("failed to encode comic info file: %w", err)
 	}
 	return nil
 }
