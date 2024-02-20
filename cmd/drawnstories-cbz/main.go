@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -26,6 +28,13 @@ func main() {
 		fmt.Printf("something went wrong: %v", err)
 		os.Exit(1)
 	}
+}
+
+type book struct {
+	Name      string
+	Pages     []string
+	Publisher string
+	Issue     int
 }
 
 type pageMsg string
@@ -139,11 +148,16 @@ func (d *model) usage() string {
 }
 
 func newDownloader(p *tea.Program) downloader {
-	return downloader{p}
+	return downloader{
+		prog:  p,
+		mutex: new(sync.RWMutex),
+	}
 }
 
 type downloader struct {
 	prog *tea.Program
+
+	mutex *sync.RWMutex
 }
 
 func (d *downloader) Run(args []string) {
@@ -165,15 +179,15 @@ func (d *downloader) Run(args []string) {
 	// if passed specified book numbers
 	if len(args) > 2 {
 		// find specified books
-		bookList := make(map[string][]string)
+		bookList := make(map[string]book)
 		suffixes := make([]string, 0)
 		for _, num := range args[2:] {
 			suffixes = append(suffixes, fmt.Sprintf("-%s", num))
 		}
-		for name, pages := range books {
+		for name, book := range books {
 			for _, s := range suffixes {
 				if strings.HasSuffix(name, s) {
-					bookList[name] = pages
+					bookList[name] = book
 				}
 			}
 		}
@@ -220,7 +234,7 @@ func (d *downloader) comicsPage(args []string) (*url.URL, error) {
 	return address, nil
 }
 
-func (d *downloader) getBooks(address string) (map[string][]string, error) {
+func (d *downloader) getBooks(address string) (map[string]book, error) {
 	resp, rErr := http.Get(address)
 	if rErr != nil {
 		return nil, fmt.Errorf("failed to get page: %w", rErr)
@@ -236,21 +250,40 @@ func (d *downloader) getBooks(address string) (map[string][]string, error) {
 		return nil, fmt.Errorf("empty page")
 	}
 
+	bookPublisher := strings.ReplaceAll(strings.Split(address, "/")[4], "-", " ")
+
 	// parse passed URL page and get all books from it
 	doc, dErr := goquery.NewDocumentFromReader(resp.Body)
 	if dErr != nil {
 		return nil, fmt.Errorf("failed to parse page: %w", dErr)
 	}
 
-	books := make(map[string][]string)
+	books := make(map[string]book)
 	doc.Find("a.fancybox").Each(func(i int, s *goquery.Selection) {
 		if ref, ok := s.Attr("href"); ok && ref != "" {
 			bookNameParts := strings.Split(ref, "/")
 			bookName := bookNameParts[len(bookNameParts)-2]
-			if _, ok := books[bookName]; !ok {
-				books[bookName] = make([]string, 0)
+			d.mutex.Lock()
+			b, ok := books[bookName]
+			if !ok {
+				b = book{
+					Pages:     make([]string, 0),
+					Publisher: bookPublisher,
+				}
+				issueParts := strings.Split(bookName, "-")
+				if len(issueParts) > 1 {
+					if _, err := fmt.Sscanf(issueParts[len(issueParts)-1], "%d", &b.Issue); err != nil {
+						fmt.Printf("failed to parse issue number: %s", err.Error())
+					}
+				}
+				if title, tok := s.Attr("title"); tok {
+					b.Name = title
+				}
+				books[bookName] = b
 			}
-			books[bookName] = append(books[bookName], ref)
+			b.Pages = append(b.Pages, ref)
+			books[bookName] = b
+			d.mutex.Unlock()
 		}
 	})
 	if len(books) == 0 {
@@ -260,7 +293,7 @@ func (d *downloader) getBooks(address string) (map[string][]string, error) {
 	return books, nil
 }
 
-func (d *downloader) makeCbz(books map[string][]string) error {
+func (d *downloader) makeCbz(books map[string]book) error {
 	orderedList := make([]string, 0)
 	for bookName := range books {
 		orderedList = append(orderedList, bookName)
@@ -268,8 +301,8 @@ func (d *downloader) makeCbz(books map[string][]string) error {
 	// sort books by name
 	sort.Strings(orderedList)
 	for _, bookName := range orderedList {
-		pages := books[bookName]
-		if len(pages) == 0 {
+		b := books[bookName]
+		if len(b.Pages) == 0 {
 			continue
 		}
 
@@ -286,7 +319,7 @@ func (d *downloader) makeCbz(books map[string][]string) error {
 			}
 		}(dir)
 
-		for _, page := range pages {
+		for _, page := range b.Pages {
 			resp, err := http.Get(page)
 			if err != nil {
 				return fmt.Errorf("failed to get page: %w", err)
@@ -314,12 +347,73 @@ func (d *downloader) makeCbz(books map[string][]string) error {
 			_, _ = io.Copy(f, resp.Body)
 			_ = f.Close()
 		}
+		// generate book description
+		descErr := d.generateDescription(dir, b)
+		if descErr != nil {
+			return fmt.Errorf("failed to create description: %w", descErr)
+		}
+
 		// create zip archive
 		zipName := fmt.Sprintf("%s.cbz", bookName)
 		zipErr := d.archiver(dir, zipName)
 		if zipErr != nil {
 			return fmt.Errorf("failed to create zip archive: %w", zipErr)
 		}
+	}
+	return nil
+}
+
+func (d *downloader) generateDescription(dir string, b book) error {
+	// create CoMet.xml file
+	cometErr := d.createCometFile(dir, b)
+	if cometErr != nil {
+		return fmt.Errorf("failed to create comet file: %w", cometErr)
+	}
+	return nil
+}
+
+func (d *downloader) createCometFile(dir string, b book) error {
+	// write xml declaration
+	cometFile, cErr := os.Create(filepath.Join(dir, "CoMet.xml"))
+	if cErr != nil {
+		return fmt.Errorf("failed to create comet file: %w", cErr)
+	}
+	defer func(c io.Closer) {
+		_ = c.Close()
+	}(cometFile)
+
+	// information about comet found here https://github.com/geometer/FBReaderJ/issues/329
+	// comet specification https://www.denvog.com/comet/comet-specification/
+	type comet struct {
+		XMLName   xml.Name `xml:"comet"`
+		XMLNS     string   `xml:"xmlns:comet,attr"`
+		XSI       string   `xml:"xmlns:xsi,attr"`
+		Schema    string   `xml:"xsi:schemaLocation,attr"`
+		Title     string   `xml:"title"`
+		Issue     int      `xml:"issue"`
+		Publisher string   `xml:"publisher"`
+		Pages     int      `xml:"pages"`
+		Format    string   `xml:"format"`
+	}
+
+	info := comet{
+		XMLNS:     "http://www.denvog.com/comet/",
+		XSI:       "http://www.w3.org/2001/XMLSchema-instance",
+		Schema:    "http://www.denvog.com http://www.denvog.com/comet/comet.xsd",
+		Title:     b.Name,
+		Format:    "Comic",
+		Issue:     b.Issue,
+		Publisher: b.Publisher,
+		Pages:     len(b.Pages),
+	}
+	_, hErr := cometFile.WriteString(xml.Header)
+	if hErr != nil {
+		return fmt.Errorf("failed to write to comet file: %w", hErr)
+	}
+	enc := xml.NewEncoder(cometFile)
+	enc.Indent("", "  ")
+	if err := enc.Encode(info); err != nil {
+		return fmt.Errorf("failed to encode comet file: %w", err)
 	}
 	return nil
 }
