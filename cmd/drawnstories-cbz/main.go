@@ -373,6 +373,10 @@ func (d *downloader) generateDescription(dir string, b book) error {
 	if comicInfoErr != nil {
 		return fmt.Errorf("failed to create comic info file: %w", comicInfoErr)
 	}
+	acbfErr := d.createACBFFile(dir, b)
+	if acbfErr != nil {
+		return fmt.Errorf("failed to create acbf file: %w", acbfErr)
+	}
 	return nil
 }
 
@@ -424,13 +428,13 @@ func (d *downloader) createCometFile(dir string, b book) error {
 
 func (d *downloader) createComicInfoFile(dir string, b book) error {
 	// write xml declaration
-	cometFile, cErr := os.Create(filepath.Join(dir, "ComicInfo.xml"))
+	comicInfoFile, cErr := os.Create(filepath.Join(dir, "ComicInfo.xml"))
 	if cErr != nil {
 		return fmt.Errorf("failed to create comic info file: %w", cErr)
 	}
 	defer func(c io.Closer) {
 		_ = c.Close()
-	}(cometFile)
+	}(comicInfoFile)
 
 	// information about comet found here https://github.com/geometer/FBReaderJ/issues/329
 	// Some comic info description here https://wiki.mobileread.com/wiki/ComicRack
@@ -452,14 +456,73 @@ func (d *downloader) createComicInfoFile(dir string, b book) error {
 		Number:    b.Issue,
 		PageCount: len(b.Pages),
 	}
-	_, hErr := cometFile.WriteString(xml.Header)
+	_, hErr := comicInfoFile.WriteString(xml.Header)
 	if hErr != nil {
 		return fmt.Errorf("failed to write to comic info file: %w", hErr)
 	}
-	enc := xml.NewEncoder(cometFile)
+	enc := xml.NewEncoder(comicInfoFile)
 	enc.Indent("", "  ")
 	if err := enc.Encode(info); err != nil {
 		return fmt.Errorf("failed to encode comic info file: %w", err)
+	}
+	return nil
+}
+
+// createACBFFile generates description only, without actual content
+func (d *downloader) createACBFFile(dir string, b book) error {
+	// write xml declaration
+	acbfFile, cErr := os.Create(filepath.Join(dir, "metadata.acbf"))
+	if cErr != nil {
+		return fmt.Errorf("failed to create acbf file: %w", cErr)
+	}
+	defer func(c io.Closer) {
+		_ = c.Close()
+	}(acbfFile)
+
+	// information about comet found here https://github.com/geometer/FBReaderJ/issues/329
+	// Some info about ACBF here https://wiki.mobileread.com/wiki/Advanced_Comic_Book_Format
+	// acbf specification https://acbf.fandom.com/wiki/ACBF_Specifications
+
+	type acbfBookInfo struct {
+		BookTitle string `xml:"book-title"`
+		Sequence  int    `xml:"sequence"`
+	}
+
+	type acbfPublishInfo struct {
+		Publisher string `xml:"publisher"`
+	}
+
+	type acbfMetadata struct {
+		BookInfo    acbfBookInfo    `xml:"book-info"`
+		PublishInfo acbfPublishInfo `xml:"publish-info"`
+	}
+
+	type acbfDescription struct {
+		XMLName  xml.Name     `xml:"ACBF"`
+		XMLNS    string       `xml:"xmlns,attr"`
+		MetaData acbfMetadata `xml:"meta-data"`
+	}
+
+	info := acbfDescription{
+		XMLNS: "http://www.fictionbook-lib.org/xml/acbf/1.0",
+		MetaData: acbfMetadata{
+			BookInfo: acbfBookInfo{
+				BookTitle: b.Name,
+				Sequence:  b.Issue,
+			},
+			PublishInfo: acbfPublishInfo{
+				Publisher: b.Publisher,
+			},
+		},
+	}
+	_, hErr := acbfFile.WriteString(xml.Header)
+	if hErr != nil {
+		return fmt.Errorf("failed to write to acbf file: %w", hErr)
+	}
+	enc := xml.NewEncoder(acbfFile)
+	enc.Indent("", "  ")
+	if err := enc.Encode(info); err != nil {
+		return fmt.Errorf("failed to encode acbf file: %w", err)
 	}
 	return nil
 }
